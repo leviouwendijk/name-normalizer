@@ -1,0 +1,19 @@
+uuid = "1501DB5A-E988-4A14-A8FA-184537FBA016"
+name = "name-normalizer"
+types {
+    "binary"
+}
+versions {
+    release {
+        major = 0
+        minor = 1
+        patch = 0
+    }
+}
+compile {
+    use = false
+    arguments {  }
+}
+details = ""
+author = "leviouwendijk"
+update = "https://raw.githubusercontent.com/leviouwendijk/name-normalizer/master/build-object.pkl"
