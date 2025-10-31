@@ -1,5 +1,6 @@
 import Foundation
 import Darwin
+import plate
 
 // ========= Global SIGINT handler =========
 fileprivate final class _TermiosStore: @unchecked Sendable {
@@ -58,30 +59,84 @@ fileprivate final class TerminalSessionGuard {
 
 public struct FileSelectTUI {
     public let files: [FileInfo]
+    public let style: CaseStyle
+    public let separators: SeparatorPolicy
+    private var filters: [String]
+    
+    public init(
+        files: [FileInfo],
+        style: CaseStyle,
+        separators: SeparatorPolicy,
+        initialFilters: [String]
+    ) {
+        self.files = files
+        self.style = style
+        self.separators = separators
+        self.filters = initialFilters
+    }
+
     public var selected: Set<Int> = []
     public var currentIndex: Int = 0
 
     // redraw cache
     private var lastDrawnIndex: Int = -1
     private var lastDrawnSelection = Set<Int>()
+    private var lastDrawnFilters: [String] = []
 
-    public init(files: [FileInfo]) { self.files = files }
+    // new additions
+    private enum Mode { case list, filterInput }
 
-    public mutating func present() async throws -> [FileInfo] {
-        guard !files.isEmpty else { return [] }
+    public struct SelectionResult { 
+        public let files: [FileInfo]
+        public let filters: [String] 
+    }
+
+    // public mutating func present() async throws -> [FileInfo] {
+    public mutating func present() async throws -> SelectionResult {
+        guard !files.isEmpty else { return .init(files: [], filters: []) }
 
         // RAII: restores TTY + screen; leaves SIGINT handler active
         let _ = TerminalSessionGuard()
 
         try displayMenu(force: true)
 
-        while true {
-            let key = readKey()
-            if !handleKey(key) { break }
-            try displayMenu()
-        }
+        var mode: Mode = .list
+        var inputBuffer = ""
 
-        return selected.sorted().map { files[$0] }
+        while true {
+            // let key = readKey()
+            // if !handleKey(key) { break }
+            // try displayMenu()
+        // }
+            let key = readKey()
+            switch mode {
+            case .list:
+                if key == .startFilter {
+                    mode = .filterInput
+                    inputBuffer = filters.joined(separator: ", ")
+                    try displayMenu(force: true, filterBuffer: inputBuffer, inFilterMode: true)
+                    continue
+                }
+                if !handleListKey(key) { 
+                    break 
+                }
+                try displayMenu()
+            case .filterInput:
+                let cont = handleFilterKey(key, buffer: &inputBuffer, applied: { new in
+                    self.filters = Self.parseFilters(new)
+                }, cancelled: {
+                    // nothing; keep existing filters
+                })
+                if !cont { 
+                    // leave filter mode -> back to list
+                    mode = .list
+                }
+                try displayMenu(force: true, filterBuffer: inputBuffer, inFilterMode: mode == .filterInput)
+            }
+         }
+ 
+        // return selected.sorted().map { files[$0] }
+        return .init(files: selected.sorted().map { files[$0] }, filters: filters)
     }
 
     // Drawing
@@ -100,6 +155,7 @@ public struct FileSelectTUI {
             "Move: ↑ / k, ↓ / j, ^P / ^N",
             "Toggle: Space / ^Space",
             "All: ^A",
+            "Filter: ^F",
             "Confirm: Enter",
             "Quit: q / ^C"
         ]
@@ -120,10 +176,16 @@ public struct FileSelectTUI {
         return lines
     }
 
-    private mutating func displayMenu(force: Bool = false) throws {
-        if !force, lastDrawnIndex == currentIndex, lastDrawnSelection == selected { return }
+    // private mutating func displayMenu(force: Bool = false) throws {
+    private mutating func displayMenu(force: Bool = false, filterBuffer: String? = nil, inFilterMode: Bool = false) throws {
+        if !force, 
+            lastDrawnIndex == currentIndex, 
+            lastDrawnSelection == selected,
+            lastDrawnFilters == filters { return }
+
         lastDrawnIndex = currentIndex
         lastDrawnSelection = selected
+        lastDrawnFilters = filters // adding
 
         let cols = terminalColumns()
 
@@ -139,7 +201,20 @@ public struct FileSelectTUI {
         for line in legendLines {
             fputs(line + "\n", stderr)
         }
-        fputs("\u{1B}[0m\n", stderr) // reset + blank line
+
+        // fputs("\u{1B}[0m\n", stderr) // reset + blank line
+        fputs("\u{1B}[0m", stderr) // reset
+
+        // Filters row
+        fputs("\n", stderr)
+        fputs("\u{1B}[2mFilters:\u{1B}[0m ", stderr)
+        if filters.isEmpty {
+            fputs("(none)  ", stderr)
+        } else {
+            fputs(filters.joined(separator: ", "), stderr)
+            fputs("  ", stderr)
+        }
+        fputs("\u{1B}[2m(press ^F to edit)\u{1B}[0m\n\n", stderr)
 
         // List
         for (index, file) in files.enumerated() {
@@ -148,9 +223,29 @@ public struct FileSelectTUI {
             let marker     = isSelected ? "✓" : " "
             let prefix     = isCurrent ? ">" : " "
 
+            // if isCurrent { fputs("\u{1B}[7m", stderr) } // inverse
+            // fputs("\(prefix) [\(marker)] \(file.filename)\n", stderr)
+            // if isCurrent { fputs("\u{1B}[0m", stderr) }
+        // }
+            // Name with inline highlights for matched parts
+            let colored = highlightMatches(in: file.filename, parts: filters, isCurrent: isCurrent)
+            // Right-hand preview (filtered → case-converted)
+            let preview = previewName(for: file)
+
             if isCurrent { fputs("\u{1B}[7m", stderr) } // inverse
-            fputs("\(prefix) [\(marker)] \(file.filename)\n", stderr)
-            if isCurrent { fputs("\u{1B}[0m", stderr) }
+            fputs("\(prefix) [\(marker)] ", stderr)
+            fputs(colored, stderr)
+            if isCurrent { fputs("\u{1B}[27m", stderr) } // end inverse only
+
+            // faint arrow + preview
+            fputs("  \u{1B}[2m→ \(preview)\u{1B}[0m\n", stderr)
+         }
+ 
+        // Filter input surface (if active)
+        if inFilterMode {
+            fputs("\n\u{1B}[1mFilter (comma-separated):\u{1B}[0m ", stderr)
+            fputs(filterBuffer ?? "", stderr)
+            fputs("\n\u{1B}[2mEnter to apply • Esc to cancel • Backspace to delete\u{1B}[0m\n", stderr)
         }
 
         fflush(stderr)
@@ -158,7 +253,11 @@ public struct FileSelectTUI {
 
     // Input
 
-    private enum Key { case up, down, enter, toggle, toggleAll, quit, other }
+    // private enum Key { case up, down, enter, toggle, toggleAll, quit, other }
+    private enum Key: Equatable {
+        case up, down, enter, toggle, toggleAll, quit, startFilter
+        case char(Character), backspace, escape, other
+    }
 
     private func readKey() -> Key {
         var cooked = termios()
@@ -198,6 +297,7 @@ public struct FileSelectTUI {
         switch b0 {
         case 0x03: return .quit                 // ^C (fallback if ISIG off)
         case 0x01: return .toggleAll            // ^A
+        case 0x06: return .startFilter          // ^F
         case 0x6B: return .up                   // 'k'
         case 0x6A: return .down                 // 'j'
         case 0x10: return .up                   // ^P
@@ -205,6 +305,7 @@ public struct FileSelectTUI {
         case 0x00, 0x20: return .toggle         // ^Space (NUL) or Space
         case 0x0D, 0x0A: return .enter          // CR/LF
         case 0x71, 0x51: return .quit           // q/Q
+        case 0x7F: return .backspace            // DEL
         case 0x1B:
             // Nonblocking drain to recognize ESC [ A/B (arrows)
             let flags = fcntl(fd, F_GETFL)
@@ -220,14 +321,21 @@ public struct FileSelectTUI {
                 default: break
                 }
             }
-            return .other
+            // return .other
+            return .escape
         default:
-            return .other
+            if b0 >= 0x20 && b0 <= 0x7E {
+                return .char(Character(UnicodeScalar(b0)))
+            } else {
+                return .other
+            }
+            // return .other
         }
     }
 
     // State
-    private mutating func handleKey(_ key: Key) -> Bool {
+    // private mutating func handleKey(_ key: Key) -> Bool {
+    private mutating func handleListKey(_ key: Key) -> Bool {
         switch key {
         case .up:
             currentIndex = (currentIndex - 1 + files.count) % files.count
@@ -248,8 +356,111 @@ public struct FileSelectTUI {
         case .quit:
             selected.removeAll()
             return false
-        case .other:
+        // case .other:
+        //     return true
+        default:
             return true
         }
+    }
+
+    // Filter-mode keystrokes. Returns whether we remain in filter mode.
+    private func handleFilterKey(_ key: Key,
+                                 buffer: inout String,
+                                 applied: (String) -> Void,
+                                 cancelled: () -> Void) -> Bool {
+        switch key {
+        case .enter:
+            applied(buffer)
+            return false
+        case .escape, .quit:
+            cancelled()
+            return false
+        case .backspace:
+            if !buffer.isEmpty { buffer.removeLast() }
+            return true
+        case .char(let c):
+            buffer.append(c)
+            return true
+        default:
+            return true
+        }
+    }
+
+    private static func parseFilters(_ s: String) -> [String] {
+        s.split(separator: ",")
+         .map { $0.trimmingCharacters(in: .whitespaces) }
+         .filter { !$0.isEmpty }
+    }
+
+    // === Rendering helpers ===
+    private func previewName(for file: FileInfo) -> String {
+        var base = file.nameWithoutExtension
+        if !filters.isEmpty {
+            base = filterParts(in: base, parts: filters)
+        }
+        let converted = convertIdentifier(base, to: style, separators: separators)
+        return converted + file.extensionWithDot
+    }
+
+    /// Inline-highlight matched parts inside the given string.
+    /// For the current row (inverse), underline the matches; for others, tint them with default fg color changes.
+    private func highlightMatches(in s: String, parts: [String], isCurrent: Bool) -> String {
+        guard !parts.isEmpty else { return s }
+        // Find all case-insensitive ranges to decorate.
+        let lower = s.lowercased()
+        var marks = Array(repeating: false, count: s.unicodeScalars.count)
+        let scalars = Array(s.unicodeScalars)
+        let lowerScalars = Array(lower.unicodeScalars)
+
+        func markRange(start: Int, length: Int) {
+            guard start >= 0, length > 0, start + length <= marks.count else { return }
+            for i in start..<(start+length) { marks[i] = true }
+        }
+        // Naive scan for each part.
+        for p in parts where !p.isEmpty {
+            let pSc = Array(p.lowercased().unicodeScalars)
+            if pSc.isEmpty { continue }
+            var i = 0
+            while i + pSc.count <= lowerScalars.count {
+                var ok = true
+                for j in 0..<pSc.count {
+                    if lowerScalars[i+j] != pSc[j] { ok = false; break }
+                }
+                if ok {
+                    markRange(start: i, length: pSc.count)
+                    i += pSc.count
+                } else {
+                    i += 1
+                }
+            }
+        }
+
+        // Rebuild with SGR spans
+        var out = ""
+        var i = 0
+        var inSpan = false
+        while i < scalars.count {
+            if marks[i] && !inSpan {
+                // Start decoration
+                if isCurrent {
+                    out += "\u{1B}[4m"       // underline within inverse block
+                } else {
+                    out += "\u{1B}[1m\u{1B}[33m" // bold + yellow
+                }
+                inSpan = true
+            } else if !marks[i] && inSpan {
+                // End decoration
+                if isCurrent { out += "\u{1B}[24m" } // end underline
+                else { out += "\u{1B}[22m\u{1B}[39m" } // normal weight + default fg
+                inSpan = false
+            }
+            out.unicodeScalars.append(scalars[i])
+            i += 1
+        }
+        if inSpan {
+            if isCurrent { out += "\u{1B}[24m" }
+            else { out += "\u{1B}[22m\u{1B}[39m" }
+        }
+        return out
     }
 }

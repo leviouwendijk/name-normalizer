@@ -62,6 +62,13 @@ struct NormalizeName: AsyncParsableCommand {
 
     @Option(
         name: [.short, .long],
+        parsing: .upToNextOption,
+        help: "Filtering strings out of final name"
+    )
+    var filters: [String] = []
+
+    @Option(
+        name: [.short, .long],
         help: "Output directory (default: current directory)"
     )
     var output: String?
@@ -78,7 +85,7 @@ struct NormalizeName: AsyncParsableCommand {
     )
     var force: Bool = false
 
-    func run() async throws {
+    mutating func run() async throws {
         let cwd = FileManager.default.currentDirectoryPath
         let outputDir = output ?? cwd
         
@@ -146,9 +153,16 @@ struct NormalizeName: AsyncParsableCommand {
         }
     }
 
-    private func selectFilesInteractive(_ files: [FileInfo]) async throws -> [FileInfo] {
-        var ui = FileSelectTUI(files: files)
-        return try await ui.present()
+    private mutating func selectFilesInteractive(_ files: [FileInfo]) async throws -> [FileInfo] {
+        // var ui = FileSelectTUI(files: files)
+        // return try await ui.present()
+        let cs  = style.toCaseStyle()
+        let sp  = separators.toSeparatorPolicy()
+        var ui  = FileSelectTUI(files: files, style: cs, separators: sp, initialFilters: self.filters)
+        let res = try await ui.present()
+
+        self.filters = res.filters
+        return res.files
     }
 
     private func processRenames(_ files: [FileInfo], outputDir: String) async throws {
@@ -158,11 +172,19 @@ struct NormalizeName: AsyncParsableCommand {
         var results: [RenameResult] = []
 
         for file in files {
-            let newName = convertIdentifier(
-                file.nameWithoutExtension,
+            var baseName = file.nameWithoutExtension
+
+            if !filters.isEmpty {
+                baseName = filterParts(in: baseName, parts: filters)
+            }
+
+            let convertedName = convertIdentifier(
+                baseName,
                 to: caseStyle,
                 separators: separatorPolicy
-            ) + file.extensionWithDot
+            )
+
+            let newName = convertedName + file.extensionWithDot
 
             let oldPath = file.path
             let newPath = outputDir + "/" + newName
