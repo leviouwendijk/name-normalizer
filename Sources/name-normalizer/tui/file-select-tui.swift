@@ -104,10 +104,6 @@ public struct FileSelectTUI {
         var inputBuffer = ""
 
         while true {
-            // let key = readKey()
-            // if !handleKey(key) { break }
-            // try displayMenu()
-        // }
             let key = readKey()
             switch mode {
             case .list:
@@ -117,17 +113,22 @@ public struct FileSelectTUI {
                     try displayMenu(force: true, filterBuffer: inputBuffer, inFilterMode: true)
                     continue
                 }
-                if !handleListKey(key) { 
-                    break 
+                if !handleListKey(key) {
+                    // Enter or Quit from list mode — finish the TUI.
+                    return .init(files: selected.sorted().map { files[$0] }, filters: filters)
                 }
                 try displayMenu()
             case .filterInput:
-                let cont = handleFilterKey(key, buffer: &inputBuffer, applied: { new in
-                    self.filters = Self.parseFilters(new)
-                }, cancelled: {
-                    // nothing; keep existing filters
-                })
-                if !cont { 
+                let cont = handleFilterKey(
+                    key,
+                    buffer: &inputBuffer,
+                    applied: { new in
+                        self.filters = Self.parseFilters(new)
+                    },
+                    cancelled: {
+                    }
+                )
+                if !cont {
                     // leave filter mode -> back to list
                     mode = .list
                 }
@@ -135,7 +136,6 @@ public struct FileSelectTUI {
             }
          }
  
-        // return selected.sorted().map { files[$0] }
         return .init(files: selected.sorted().map { files[$0] }, filters: filters)
     }
 
@@ -303,7 +303,22 @@ public struct FileSelectTUI {
         case 0x10: return .up                   // ^P
         case 0x0E: return .down                 // ^N
         case 0x00, 0x20: return .toggle         // ^Space (NUL) or Space
-        case 0x0D, 0x0A: return .enter          // CR/LF
+        // case 0x0D, 0x0A: return .enter          // CR/LF
+        case 0x0D, 0x0A:
+            // Swallow an immediately following paired newline (CRLF or LFCR),
+            // so a single physical Enter isn’t seen as two logical enters.
+            let fd = STDIN_FILENO
+            let flags = fcntl(fd, F_GETFL)
+            _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+            defer { _ = fcntl(fd, F_SETFL, flags) }
+            var peek: UInt8 = 0
+            if read(fd, &peek, 1) == 1 {
+                if (b0 == 0x0D && peek != 0x0A) && (b0 == 0x0A && peek != 0x0D) {
+                    // Not the matching pair; push back behavior isn't available,
+                    // so we just ignore the extra char if it's unrelated.
+                }
+            }
+            return .enter
         case 0x71, 0x51: return .quit           // q/Q
         case 0x7F: return .backspace            // DEL
         case 0x1B:
@@ -364,10 +379,12 @@ public struct FileSelectTUI {
     }
 
     // Filter-mode keystrokes. Returns whether we remain in filter mode.
-    private func handleFilterKey(_ key: Key,
-                                 buffer: inout String,
-                                 applied: (String) -> Void,
-                                 cancelled: () -> Void) -> Bool {
+    private func handleFilterKey(
+        _ key: Key,
+        buffer: inout String,
+        applied: (String) -> Void,
+        cancelled: () -> Void
+    ) -> Bool {
         switch key {
         case .enter:
             applied(buffer)
