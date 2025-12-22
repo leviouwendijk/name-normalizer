@@ -68,6 +68,18 @@ struct NormalizeName: AsyncParsableCommand {
     var filters: [String] = []
 
     @Option(
+        name: .long,
+        help: "Prefix to add to the final name (applied after case conversion, before extension)"
+    )
+    var prefix: String = ""
+
+    @Option(
+        name: .long,
+        help: "Suffix to add to the final name (applied after case conversion, before extension)"
+    )
+    var suffix: String = ""
+
+    @Option(
         name: [.short, .long],
         help: "Output directory (default: current directory)"
     )
@@ -158,10 +170,20 @@ struct NormalizeName: AsyncParsableCommand {
         // return try await ui.present()
         let cs  = style.toCaseStyle()
         let sp  = separators.toSeparatorPolicy()
-        var ui  = FileSelectTUI(files: files, style: cs, separators: sp, initialFilters: self.filters)
+        var ui  = FileSelectTUI(
+            files: files,
+            style: cs,
+            separators: sp,
+            initialFilters: self.filters,
+            initialPrefix: self.prefix,
+            initialSuffix: self.suffix
+        )
         let res = try await ui.present()
 
         self.filters = res.filters
+        self.prefix = res.prefix
+        self.suffix = res.suffix
+
         return res.files
     }
 
@@ -184,13 +206,25 @@ struct NormalizeName: AsyncParsableCommand {
                 separators: separatorPolicy
             )
 
-            let newName = convertedName + file.extensionWithDot
+            let newName = prefix + convertedName + suffix + file.extensionWithDot
 
             let oldPath = file.path
             let newPath = outputDir + "/" + newName
 
             if dryRun {
                 print("→ \(file.filename) → \(newName)")
+                continue
+            }
+
+            // No-op: name already matches
+            if newPath == oldPath {
+                results.append(
+                    RenameResult(
+                        original: file.filename,
+                        renamed: newName,
+                        success: true
+                    )
+                )
                 continue
             }
 
@@ -230,7 +264,13 @@ struct NormalizeName: AsyncParsableCommand {
         }
 
         // Summary
-        let successful = results.filter { $0.success }.count
-        print("\n✓ Successfully renamed \(successful)/\(results.count) files")
+        // let successful = results.filter { $0.success }.count
+        // print("\n✓ Successfully renamed \(successful)/\(results.count) files")
+        let failed = results.filter { !$0.success }.count
+        let succeeded = results.count - failed
+        let renamed = results.filter { $0.success && $0.original != $0.renamed }.count
+        let skipped = results.filter { $0.success && $0.original == $0.renamed }.count
+
+        print("\n✓ \(renamed) renamed, \(skipped) skipped, \(failed) failed (\(succeeded)/\(results.count) ok)")
     }
 }
