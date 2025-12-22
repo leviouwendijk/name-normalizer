@@ -92,12 +92,7 @@ public struct FileSelectTUI {
     private var lastDrawnSurface: InputSurface = .none
     private var lastDrawnPrefix: String = ""
     private var lastDrawnSuffix: String = ""
-
-    // private enum Mode {
-    //     case list
-    //     case filterInput
-    //     case modifyInput(ModifyField)
-    // }
+    private var lastDrawnCols: Int = 0
 
     private enum InputSurface: Equatable {
         case none
@@ -124,7 +119,6 @@ public struct FileSelectTUI {
         public let suffix: String
     }
 
-    // public mutating func present() async throws -> [FileInfo] {
     public mutating func present() async throws -> SelectionResult {
         guard !files.isEmpty else { 
             return .init(
@@ -139,8 +133,6 @@ public struct FileSelectTUI {
         let _ = TerminalSessionGuard()
 
         try displayMenu(force: true, surface: .none)
-
-        // var mode: Mode = .list
 
         var surface: InputSurface = .none
         var inputBuffer = ""
@@ -201,73 +193,6 @@ public struct FileSelectTUI {
             }
         }
 
-        // while true {
-        //     let key = readKey()
-        //     switch mode {
-        //     case .list:
-        //         if key == .startFilter {
-        //             mode = .filterInput
-        //             inputBuffer = filters.joined(separator: ", ")
-        //             try displayMenu(force: true, surface: .filter(buffer: inputBuffer))
-        //             continue
-        //         }
-
-        //         if key == .startPrefix {
-        //             mode = .modifyInput(.prefix)
-        //             inputBuffer = prefix
-        //             try displayMenu(force: true, surface: .modify(field: .prefix, buffer: inputBuffer))
-        //             continue
-        //         }
-
-        //         if key == .startSuffix {
-        //             mode = .modifyInput(.suffix)
-        //             inputBuffer = suffix
-        //             try displayMenu(force: true, surface: .modify(field: .suffix, buffer: inputBuffer))
-        //             continue
-        //         }
-
-        //         if !handleListKey(key) {
-        //             // Enter or Quit from list mode — finish the TUI.
-        //             // return .init(files: selected.sorted().map { files[$0] }, filters: filters)
-        //             return .init(
-        //                 files: selected.sorted().map { files[$0] },
-        //                 filters: filters,
-        //                 prefix: prefix,
-        //                 suffix: suffix
-        //             )
-        //         }
-
-        //         try displayMenu(surface: .none)
-        //     case .filterInput:
-        //         let cont = handleFilterKey(
-        //             key,
-        //             buffer: &inputBuffer,
-        //             applied: { new in
-        //                 self.filters = Self.parseFilters(new)
-        //             },
-        //             cancelled: {
-        //             }
-        //         )
-        //         if !cont {
-        //             // leave filter mode -> back to list
-        //             mode = .list
-        //         }
-        //         try displayMenu(force: true, surface: .filter(buffer: inputBuffer))
-
-        //     case .modifyInput(let field):
-        //         let cont = handleModifyInputKey(
-        //             key,
-        //             buffer: &inputBuffer,
-        //             field: field
-        //         )
-        //         if !cont {
-        //             mode = .list
-        //         }
-        //         try displayMenu(force: true, surface: .modify(field: field, buffer: inputBuffer))
-        //     }
-        //  }
- 
-        // return .init(files: selected.sorted().map { files[$0] }, filters: filters)
         return .init(
             files: selected.sorted().map { files[$0] },
             filters: filters,
@@ -319,7 +244,10 @@ public struct FileSelectTUI {
         force: Bool = false,
         surface: InputSurface = .none
     ) throws {
+        let cols = terminalColumns()
+
         if !force,
+            lastDrawnCols == cols,
             lastDrawnIndex == currentIndex,
             lastDrawnSelection == selected,
             lastDrawnFilters == filters,
@@ -329,14 +257,13 @@ public struct FileSelectTUI {
             return
         }
 
+        lastDrawnCols = cols
         lastDrawnIndex = currentIndex
         lastDrawnSelection = selected
         lastDrawnFilters = filters
         lastDrawnSurface = surface
         lastDrawnPrefix = prefix
         lastDrawnSuffix = suffix
-
-        let cols = terminalColumns()
 
         // Clear + home
         fputs("\u{1B}[2J\u{1B}[H", stderr)
@@ -377,10 +304,6 @@ public struct FileSelectTUI {
             let marker     = isSelected ? "✓" : " "
             let rowPrefix     = isCurrent ? ">" : " "
 
-            // if isCurrent { fputs("\u{1B}[7m", stderr) } // inverse
-            // fputs("\(rowPrefix) [\(marker)] \(file.filename)\n", stderr)
-            // if isCurrent { fputs("\u{1B}[0m", stderr) }
-        // }
             // Name with inline highlights for matched parts
             let colored = highlightMatches(in: file.filename, parts: filters, isCurrent: isCurrent)
             // Right-hand preview (filtered → case-converted)
@@ -513,15 +436,6 @@ public struct FileSelectTUI {
                 default: break
                 }
             }
-
-            // // Meta/Alt + key comes as: ESC then a printable byte
-            // if m == 1 {
-            //     switch rest[0] {
-            //     case 0x70, 0x50: return .startPrefix // p / P
-            //     case 0x73, 0x53: return .startSuffix // s / S
-            //     default: break
-            //     }
-            // }
 
             // return .other
             return .escape
