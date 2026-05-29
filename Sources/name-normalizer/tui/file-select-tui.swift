@@ -138,7 +138,8 @@ public struct FileSelectTUI {
         var inputBuffer = ""
 
         while true {
-            let key = readKey()
+            // let key = readKey()
+            let key = readKey(textInputActive: surface != .none)
 
             switch surface {
             case .none:
@@ -354,7 +355,8 @@ public struct FileSelectTUI {
         case other
     }
 
-    private func readKey() -> Key {
+    // private func readKey(textInputActive: Bool = false) -> Key {
+    private func readKey(textInputActive: Bool) -> Key {
         var cooked = termios()
         var raw    = termios()
         let fd = STDIN_FILENO
@@ -389,39 +391,19 @@ public struct FileSelectTUI {
 
         guard n > 0 else { return .other }
 
-        switch b0 {
-        case 0x03: return .quit                 // ^C (fallback if ISIG off)
-        case 0x01: return .toggleAll            // ^A
-        case 0x06: return .startFilter          // ^F
-
-        case 0x14: return .startPrefix   // ^T
-        case 0x19: return .startSuffix   // ^Y
-
-        case 0x6B: return .up                   // 'k'
-        case 0x6A: return .down                 // 'j'
-        case 0x10: return .up                   // ^P
-        case 0x0E: return .down                 // ^N
-        case 0x00, 0x20: return .toggle         // ^Space (NUL) or Space
-        // case 0x0D, 0x0A: return .enter          // CR/LF
-        case 0x0D, 0x0A:
-            // Swallow an immediately following paired newline (CRLF or LFCR),
-            // so a single physical Enter isn’t seen as two logical enters.
-            let fd = STDIN_FILENO
+        func swallowPairedNewline(after first: UInt8) {
             let flags = fcntl(fd, F_GETFL)
             _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
             defer { _ = fcntl(fd, F_SETFL, flags) }
+
             var peek: UInt8 = 0
             if read(fd, &peek, 1) == 1 {
-                if (b0 == 0x0D && peek != 0x0A) && (b0 == 0x0A && peek != 0x0D) {
-                    // Not the matching pair; push back behavior isn't available,
-                    // so we just ignore the extra char if it's unrelated.
-                }
+                // No pushback available. Only intended to consume CRLF/LFCR pairs.
+                _ = peek
             }
-            return .enter
-        case 0x71, 0x51: return .quit           // q/Q
-        case 0x7F: return .backspace            // DEL
-        case 0x1B:
-            // Nonblocking drain to recognize ESC [ A/B (arrows)
+        }
+
+        func readEscape(textInputActive: Bool) -> Key {
             let flags = fcntl(fd, F_GETFL)
             _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
             defer { _ = fcntl(fd, F_SETFL, flags) }
@@ -431,23 +413,173 @@ public struct FileSelectTUI {
 
             if m >= 2 && rest[0] == 0x5B {
                 switch rest[1] {
-                case 0x41: return .up
-                case 0x42: return .down
-                default: break
+                case 0x41:
+                    return textInputActive ? .other : .up
+                case 0x42:
+                    return textInputActive ? .other : .down
+                default:
+                    return .other
                 }
             }
 
-            // return .other
             return .escape
+        }
+
+        if textInputActive {
+            switch b0 {
+            case 0x03:
+                return .quit                 // ^C fallback
+            case 0x0D, 0x0A:
+                swallowPairedNewline(after: b0)
+                return .enter
+            case 0x7F, 0x08:
+                return .backspace            // DEL or BS
+            case 0x1B:
+                return readEscape(textInputActive: true)
+            case 0x00:
+                return .other                // ^Space/NUL, not text
+            default:
+                if b0 >= 0x20 && b0 <= 0x7E {
+                    return .char(Character(UnicodeScalar(b0)))
+                } else {
+                    return .other
+                }
+            }
+        }
+
+        switch b0 {
+        case 0x03:
+            return .quit                 // ^C fallback
+        case 0x01:
+            return .toggleAll            // ^A
+        case 0x06:
+            return .startFilter          // ^F
+        case 0x14:
+            return .startPrefix          // ^T
+        case 0x19:
+            return .startSuffix          // ^Y
+        case 0x6B:
+            return .up                   // k
+        case 0x6A:
+            return .down                 // j
+        case 0x10:
+            return .up                   // ^P
+        case 0x0E:
+            return .down                 // ^N
+        case 0x00, 0x20:
+            return .toggle               // ^Space or Space
+        case 0x0D, 0x0A:
+            swallowPairedNewline(after: b0)
+            return .enter
+        case 0x71, 0x51:
+            return .quit                 // q/Q
+        case 0x7F, 0x08:
+            return .backspace
+        case 0x1B:
+            return readEscape(textInputActive: false)
         default:
             if b0 >= 0x20 && b0 <= 0x7E {
                 return .char(Character(UnicodeScalar(b0)))
             } else {
                 return .other
             }
-            // return .other
         }
     }
+
+    // private func readKey() -> Key {
+    //     var cooked = termios()
+    //     var raw    = termios()
+    //     let fd = STDIN_FILENO
+
+    //     // Refresh saved cooked state for handler
+    //     tcgetattr(fd, &cooked)
+    //     _store.saved = cooked
+    //     _store.hasSaved = true
+
+    //     raw = cooked
+    //     cfmakeraw(&raw)
+
+    //     // Keep signals so ^C delivers SIGINT; still disable echo/canonical
+    //     raw.c_lflag |= tcflag_t(ISIG)
+    //     raw.c_lflag &= ~tcflag_t(ECHO | ICANON)
+
+    //     // Block for exactly one byte
+    //     withUnsafeMutablePointer(to: &raw.c_cc) { ccp in
+    //         ccp.withMemoryRebound(to: cc_t.self, capacity: Int(NCCS)) { cc in
+    //             cc[Int(VMIN)]  = 1
+    //             cc[Int(VTIME)] = 0
+    //         }
+    //     }
+
+    //     tcsetattr(fd, TCSANOW, &raw)
+
+    //     var b0: UInt8 = 0
+    //     let n = read(fd, &b0, 1)
+
+    //     // Restore cooked immediately after read
+    //     tcsetattr(fd, TCSANOW, &cooked)
+
+    //     guard n > 0 else { return .other }
+
+    //     switch b0 {
+    //     case 0x03: return .quit                 // ^C (fallback if ISIG off)
+    //     case 0x01: return .toggleAll            // ^A
+    //     case 0x06: return .startFilter          // ^F
+
+    //     case 0x14: return .startPrefix   // ^T
+    //     case 0x19: return .startSuffix   // ^Y
+
+    //     case 0x6B: return .up                   // 'k'
+    //     case 0x6A: return .down                 // 'j'
+    //     case 0x10: return .up                   // ^P
+    //     case 0x0E: return .down                 // ^N
+    //     case 0x00, 0x20: return .toggle         // ^Space (NUL) or Space
+    //     // case 0x0D, 0x0A: return .enter          // CR/LF
+    //     case 0x0D, 0x0A:
+    //         // Swallow an immediately following paired newline (CRLF or LFCR),
+    //         // so a single physical Enter isn’t seen as two logical enters.
+    //         let fd = STDIN_FILENO
+    //         let flags = fcntl(fd, F_GETFL)
+    //         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    //         defer { _ = fcntl(fd, F_SETFL, flags) }
+    //         var peek: UInt8 = 0
+    //         if read(fd, &peek, 1) == 1 {
+    //             if (b0 == 0x0D && peek != 0x0A) && (b0 == 0x0A && peek != 0x0D) {
+    //                 // Not the matching pair; push back behavior isn't available,
+    //                 // so we just ignore the extra char if it's unrelated.
+    //             }
+    //         }
+    //         return .enter
+    //     case 0x71, 0x51: return .quit           // q/Q
+    //     case 0x7F: return .backspace            // DEL
+    //     case 0x1B:
+    //         // Nonblocking drain to recognize ESC [ A/B (arrows)
+    //         let flags = fcntl(fd, F_GETFL)
+    //         _ = fcntl(fd, F_SETFL, flags | O_NONBLOCK)
+    //         defer { _ = fcntl(fd, F_SETFL, flags) }
+
+    //         var rest = [UInt8](repeating: 0, count: 8)
+    //         let m = read(fd, &rest, rest.count)
+
+    //         if m >= 2 && rest[0] == 0x5B {
+    //             switch rest[1] {
+    //             case 0x41: return .up
+    //             case 0x42: return .down
+    //             default: break
+    //             }
+    //         }
+
+    //         // return .other
+    //         return .escape
+    //     default:
+    //         if b0 >= 0x20 && b0 <= 0x7E {
+    //             return .char(Character(UnicodeScalar(b0)))
+    //         } else {
+    //             return .other
+    //         }
+    //         // return .other
+    //     }
+    // }
 
     // State
     // private mutating func handleKey(_ key: Key) -> Bool {
