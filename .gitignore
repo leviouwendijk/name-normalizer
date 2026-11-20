@@ -1,5 +1,5 @@
 .DS_Store
-/.build
+.build/
 /Packages
 xcuserdata/
 DerivedData/
@@ -7,9 +7,5 @@ DerivedData/
 .swiftpm/xcode/package.xcworkspace/contents.xcworkspacedata
 .netrc
 
-# auto-added ignorables:
-compiled.pkl
-/compiled.pkl
-**/compiled.pkl
 
 concatenation.txt

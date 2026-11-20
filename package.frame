@@ -1,0 +1,3 @@
+import Executable;
+
+let package: Package = .{};
